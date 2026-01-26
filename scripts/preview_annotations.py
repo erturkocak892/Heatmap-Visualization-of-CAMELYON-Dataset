@@ -140,6 +140,7 @@ def main():
 
     slide = openslide.OpenSlide(str(slide_path))
     level = args.level if args.level is not None else slide.level_count - 1
+    
     if level < 0 or level >= slide.level_count:
         raise SystemExit(f"Invalid level {level}; slide has {slide.level_count} levels.")
 

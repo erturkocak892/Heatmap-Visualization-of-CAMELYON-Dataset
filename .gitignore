@@ -17,3 +17,7 @@ data/
 
 # Plots / generated previews
 plots/
+
+# Generated tiles/overlays
+public/tiles/
+public/overlays/

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CAMELYON WSI Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.1/openseadragon.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --panel-border: #252a33;
+      --text: #e9ecf1;
+      --accent: #46c2ff;
+      --muted: #8a93a3;
+    }
+    body { margin: 0; font-family: "Inter", Arial, sans-serif; background: var(--bg); color: var(--text); }
+    #topbar { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: #0a0c10; border-bottom: 1px solid var(--panel-border); }
+    #topbar h1 { font-size: 15px; letter-spacing: 0.5px; margin: 0; color: var(--accent); }
+    #layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 48px); }
+    #sidebar { background: var(--panel); border-right: 1px solid var(--panel-border); padding: 14px 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+    #viewer { width: 100%; height: 100%; background: #000; }
+    .section { border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px; background: #12151c; }
+    .section h3 { margin: 0 0 8px 0; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    label { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    select, button { background: #0d1016; color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 10px; font-size: 14px; }
+    select:focus, button:focus { outline: 1px solid var(--accent); }
+    button { cursor: pointer; transition: background 0.2s, transform 0.1s; }
+    button:hover { background: #151925; }
+    button:active { transform: translateY(1px); }
+    input[type="range"] { width: 160px; }
+    .legend { display: flex; align-items: center; gap: 8px; }
+    .legend-bar { height: 10px; flex: 1; background: linear-gradient(90deg, #2846aa, #0db4b4, #ffd845, #ff4141); border-radius: 999px; }
+    .legend-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+    .pill { padding: 4px 8px; background: #0d1016; border: 1px solid var(--panel-border); border-radius: 12px; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>CAMELYON WSI Viewer</h1>
+    <div class="pill" id="slide-meta">Loading...</div>
+  </div>
+  <div id="layout">
+    <div id="sidebar">
+      <div class="section">
+        <h3>Layers</h3>
+        <div class="row">
+          <label><input type="checkbox" id="toggle-ann" checked>Annotations</label>
+        </div>
+        <div class="row">
+          <span style="width:90px;">Ann opacity</span>
+          <input type="range" id="ann-opacity" min="0" max="1" step="0.05" value="0.7">
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <label><input type="checkbox" id="toggle-tissue">Tissue mask</label>
+        </div>
+        <div class="row">
+          <span style="width:90px;">Tissue opacity</span>
+          <input type="range" id="tissue-opacity" min="0" max="1" step="0.05" value="0.3">
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <label><input type="checkbox" id="toggle-heat" checked>Heatmap</label>
+        </div>
+        <div class="row">
+          <span style="width:90px;">Heat opacity</span>
+          <input type="range" id="heat-opacity" min="0" max="1" step="0.05" value="0.5">
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Heatmap model</h3>
+        <div class="row">
+          <select id="model-select"></select>
+          <button id="reload-heat">Reload</button>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <select id="cell-select"></select>
+        </div>
+        <div class="legend" style="margin-top:8px;">
+          <div class="legend-bar" id="legend-bar"></div>
+        </div>
+        <div class="legend-labels">
+          <span>Low</span><span>High</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Navigation</h3>
+        <div class="row">
+          <button id="reset">Reset view</button>
+        </div>
+      </div>
+    </div>
+    <div id="viewer"></div>
+  </div>
+
+  <script>
+    // Build custom tile sources using the API endpoints.
+    async function init() {
+      const res = await fetch("/api/info");
+      if (!res.ok) {
+        console.error("Failed to load /api/info", res.status);
+        return;
+      }
+      const info = await res.json();
+      document.getElementById("slide-meta").textContent = `${info.slide.split('/').pop()} — ${info.dimensions[0]} x ${info.dimensions[1]}`;
+
+      const baseTileSource = {
+        width: info.dimensions[0],
+        height: info.dimensions[1],
+        tileSize: info.tile_size,
+        minLevel: 0,
+        maxLevel: info.levels - 1,
+        getTileUrl: (level, x, y) => `/api/tile/${level}/${x}_${y}.jpeg`,
+      };
+
+      const annTileSource = {
+        width: info.dimensions[0],
+        height: info.dimensions[1],
+        tileSize: info.tile_size,
+        minLevel: 0,
+        maxLevel: info.levels - 1,
+        getTileUrl: (level, x, y) => `/api/overlay/annotations/tile/${level}/${x}_${y}.png`,
+      };
+
+      const tissueTileSource = {
+        width: info.dimensions[0],
+        height: info.dimensions[1],
+        tileSize: info.tile_size,
+        minLevel: 0,
+        maxLevel: info.levels - 1,
+        getTileUrl: (level, x, y) => `/api/overlay/tissue/tile/${level}/${x}_${y}.png`,
+      };
+
+      const heatTileSource = (model) => ({
+        width: info.dimensions[0],
+        height: info.dimensions[1],
+        tileSize: info.tile_size,
+        minLevel: 0,
+        maxLevel: info.levels - 1,
+        getTileUrl: (level, x, y) => `/api/overlay/heatmap/tile/${level}/${x}_${y}.png?model=${encodeURIComponent(model)}`,
+      });
+
+      const viewer = OpenSeadragon({
+        id: "viewer",
+        prefixUrl: "https://unpkg.com/openseadragon@4/dist/images/",
+        tileSources: baseTileSource,
+        showNavigator: true,
+        minZoomLevel: 0.5,
+        maxZoomLevel: 20,
+      });
+
+      const models = info.models || [
+        { id: "mock-default", label: "Mock Default" },
+        { id: "mock-hi-sens", label: "High Sensitivity" },
+        { id: "mock-hi-spec", label: "High Specificity" },
+      ];
+      const cellClasses = info.cell_classes || [
+        { id: "metastasis", label: "Metastasis (tumor)" },
+        { id: "epithelial", label: "Epithelial" },
+        { id: "normal", label: "Normal" },
+      ];
+      const modelSelect = document.getElementById("model-select");
+      models.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label;
+        modelSelect.appendChild(opt);
+      });
+      const cellSelect = document.getElementById("cell-select");
+      cellClasses.forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c.id;
+        opt.textContent = c.label;
+        cellSelect.appendChild(opt);
+      });
+      let currentModel = modelSelect.value || models[0].id;
+      let currentCell = cellSelect.value || cellClasses[0].id;
+
+      let annLayer = null;
+      let tissueLayer = null;
+      let heatLayer = null;
+
+      function addLayer(src, opacity, callback) {
+        viewer.addTiledImage({
+          tileSource: src,
+          opacity,
+          success: function (event) {
+            callback(event.item);
+          },
+        });
+      }
+
+      function refreshOpacity() {
+        const annVal = parseFloat(document.getElementById("ann-opacity").value);
+        const tissueVal = parseFloat(document.getElementById("tissue-opacity").value);
+        const heatVal = parseFloat(document.getElementById("heat-opacity").value);
+        if (annLayer) annLayer.setOpacity(annVal);
+        if (tissueLayer) tissueLayer.setOpacity(tissueVal);
+        if (heatLayer) heatLayer.setOpacity(heatVal);
+      }
+
+      function toggleLayer(which, enabled) {
+        if (which === "ann") {
+          if (enabled && !annLayer) {
+            addLayer(annTileSource, parseFloat(document.getElementById("ann-opacity").value), (item) => { annLayer = item; });
+          } else if (!enabled && annLayer) {
+            viewer.world.removeItem(annLayer);
+            annLayer = null;
+          }
+        } else if (which === "heat") {
+          if (enabled && !heatLayer) {
+            addLayer(heatTileSource(currentModel + "::" + currentCell), parseFloat(document.getElementById("heat-opacity").value), (item) => { heatLayer = item; });
+          } else if (!enabled && heatLayer) {
+            viewer.world.removeItem(heatLayer);
+            heatLayer = null;
+          }
+        } else if (which === "tissue") {
+          if (enabled && !tissueLayer) {
+            addLayer(tissueTileSource, parseFloat(document.getElementById("tissue-opacity").value), (item) => { tissueLayer = item; });
+          } else if (!enabled && tissueLayer) {
+            viewer.world.removeItem(tissueLayer);
+            tissueLayer = null;
+          }
+        }
+      }
+
+      document.getElementById("toggle-ann").addEventListener("change", (e) => toggleLayer("ann", e.target.checked));
+      document.getElementById("toggle-heat").addEventListener("change", (e) => toggleLayer("heat", e.target.checked));
+      document.getElementById("toggle-tissue").addEventListener("change", (e) => toggleLayer("tissue", e.target.checked));
+      document.getElementById("ann-opacity").addEventListener("input", refreshOpacity);
+      document.getElementById("tissue-opacity").addEventListener("input", refreshOpacity);
+      document.getElementById("heat-opacity").addEventListener("input", refreshOpacity);
+      document.getElementById("reset").addEventListener("click", () => viewer.viewport.goHome());
+      document.getElementById("reload-heat").addEventListener("click", () => {
+        const enabled = document.getElementById("toggle-heat").checked;
+        if (heatLayer) { viewer.world.removeItem(heatLayer); heatLayer = null; }
+        if (enabled) toggleLayer("heat", true);
+      });
+      modelSelect.addEventListener("change", (e) => {
+        currentModel = e.target.value;
+        const enabled = document.getElementById("toggle-heat").checked;
+        if (heatLayer) { viewer.world.removeItem(heatLayer); heatLayer = null; }
+        if (enabled) toggleLayer("heat", true);
+      });
+      cellSelect.addEventListener("change", (e) => {
+        currentCell = e.target.value;
+        const enabled = document.getElementById("toggle-heat").checked;
+        if (heatLayer) { viewer.world.removeItem(heatLayer); heatLayer = null; }
+        if (enabled) toggleLayer("heat", true);
+        // Update legend gradient to hint palette
+        const bar = document.getElementById("legend-bar");
+        if (currentCell === "metastasis") bar.style.background = "linear-gradient(90deg, #2846aa, #0db4b4, #ffd845, #ff4141)";
+        else if (currentCell === "epithelial") bar.style.background = "linear-gradient(90deg, #1a6482, #1aa27a, #becf7d, #f2b85a)";
+        else bar.style.background = "linear-gradient(90deg, #2f7950, #5faf5a, #c8d488, #e7c46e)";
+      });
+
+      toggleLayer("ann", true);
+      toggleLayer("tissue", false);
+      toggleLayer("heat", true);
+    }
+
+    init().catch(err => console.error(err));
+  </script>
+</body>
+</html>
